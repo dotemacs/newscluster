@@ -4,21 +4,29 @@ A Common Lisp library for fetching and parsing RSS/Atom feeds, integrated into t
 
 ## Features
 
-- RSS 2.0 and Atom 1.0 support via feeder library
-- Category/tag filtering support
-- HTTP fetching with Drakma
+- Dual parser support: `feeder` library (primary) with `cl-feedparser` fallback
+- RSS 2.0 and Atom 1.0 support
+- Category/tag filtering support (feeder parser only)
+- HTTP fetching with automatic fallback between parsers
 - Local file parsing
 - Unicode character translation
 - MD5-based item identification
 - S-expression output format compatible with newscluster
-- Robust handling of malformed feeds
+- Robust handling of malformed feeds and XML issues
+- Automatic retry mechanism with alternative parser
 
 ## Dependencies
 
 The fetcher requires the following Common Lisp libraries:
 
+**Primary parser dependencies:**
 - `feeder` - RSS/Atom feed parsing with category support
 - `plump` - HTML/XML manipulation (used by feeder)
+
+**Fallback parser dependencies:**
+- `cl-feedparser` - Alternative RSS/Atom parser
+
+**Shared dependencies:**
 - `drakma` - HTTP client
 - `cl-ppcre` - Regular expressions
 - `ironclad` - Cryptography (MD5 hashing)
@@ -67,7 +75,11 @@ directory/
 
 ### Tag Filtering
 
-If a `required-tags` file exists in the channel directory, only feed items that have at least one matching category/tag will be saved. This allows filtering feeds to specific topics. For example, to only fetch Lisp-related posts, create a `required-tags` file with:
+If a `required-tags` file exists in the channel directory, only feed items that have at least one matching category/tag will be saved. This allows filtering feeds to specific topics.
+
+**Note:** Tag filtering is only supported when using the primary `feeder` parser. The `cl-feedparser` fallback does not support category filtering.
+
+For example, to only fetch Lisp-related posts, create a `required-tags` file with:
 
 ```
 lisp
@@ -118,7 +130,7 @@ sbcl
 
 The test suite includes tests for:
 - RSS 2.0 feeds
-- Atom 1.0 feeds  
+- Atom 1.0 feeds
 - Empty feeds
 - CDATA handling
 - Malformed XML handling
@@ -126,19 +138,24 @@ The test suite includes tests for:
 
 ## Architecture
 
-The fetcher consists of three main components:
+The fetcher consists of four main components:
 
-1. **fetcher.lisp** - Main fetching logic using feeder library, HTTP handling, and file I/O
-2. **package.lisp** - Package definition and exports  
-3. **newscluster-fetcher.asd** - ASDF system definition with dependencies
+1. **fetcher.lisp** - Main fetching logic with dual parser support and HTTP handling
+2. **fetcher-feedparser.lisp** - Alternative parser implementation using `cl-feedparser`
+3. **package.lisp** - Package definition and exports
+4. **newscluster-fetcher.asd** - ASDF system definition with dependencies
 
 ### Key Implementation Details
 
-- Uses the `feeder` library for RSS/Atom parsing with built-in category support
+- **Dual parser architecture**: Primary `feeder` library with `cl-feedparser` fallback
+- **Automatic fallback**: If the primary parser fails, automatically retries with the alternative parser
+- **Shared utilities**: Common HTTP fetching, file I/O, and string processing functions
+- **Parser-specific handling**: Different data extraction methods for each parser library
+- **Robust error handling**: Gracefully handles malformed feeds, missing data, and parser failures
 - Handles both string IDs and `feeder:link` objects for feed item identification
 - Automatically converts between Unix time and Universal time for compatibility
 - Supports both HTTP URLs and local file paths as input
-- Gracefully handles malformed feeds and missing data
+- XML preprocessing to fix common malformed feed issues (e.g., Blogspot timestamp formats)
 
 ## API
 
@@ -146,12 +163,17 @@ The fetcher consists of three main components:
 
 `(fetch-channel url directory name)`
 
-Fetches a feed from URL and saves it to DIRECTORY with the given NAME.
+Fetches a feed from URL and saves it to DIRECTORY with the given NAME. Automatically tries the primary `feeder` parser first, then falls back to `cl-feedparser` if needed.
 
 - **url**: Feed URL (http/https) or local file path
 - **directory**: Output directory path (will be created if needed)
 - **name**: Channel name for identification
-- **Returns**: T on success, NIL on failure
+- **Returns**: T on success, NIL if both parsers fail
+
+### Parser-Specific Functions
+
+`(fetch-channel-original url directory name)` - Uses `feeder` parser only
+`(fetch-channel-feedparser url directory name)` - Uses `cl-feedparser` only
 
 ## License
 

@@ -9,10 +9,11 @@
   (handler-case
       (multiple-value-bind (content status headers uri)
           (drakma:http-request url
-                              :user-agent *user-agent*
-                              :force-binary t
-                              :connection-timeout 10
-                              :redirect t)  ; Follow all redirects
+                               :user-agent *user-agent*
+                               :force-binary t
+                               :connection-timeout 10
+                               :redirect t
+                               :preserve-uri t)
         ;; Only process content if we got a successful response
         (cond
           ((= status 404)

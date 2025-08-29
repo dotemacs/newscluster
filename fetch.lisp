@@ -10,21 +10,22 @@
 
 (in-package :newscluster)
 
-(defvar *python-fetch-program*
-  (asdf:system-relative-pathname "newscluster" #p"python/fetch-channel.py"))
-
 (defun make-fetcher (channel)
+  "Create a fetcher for the given channel"
   (cond ((string= (source channel) "python")
          (lambda ()
-           (unless (simple-run-program (native-filename *python-fetch-program*)
-                                       (feed-url channel)
-                                       (native-filename (path channel))
-                                       (name channel))
-             (format *debug-io* "; fetch of ~A failed!~%"
-                     (feed-url channel)))))))
-
+           (handler-case
+               (newscluster-fetcher:fetch-channel
+                (feed-url channel)
+                (native-filename (path channel))
+                (name channel))
+             (error (e)
+               (format *debug-io* "; fetch of ~A failed: ~A~%"
+                       (feed-url channel) e)
+               nil))))))
 
 (defun native-filename (pathname)
+  "Convert a pathname to a native filename string"
   (let ((directory (pathname-directory pathname))
         (name (pathname-name pathname))
         (type (pathname-type pathname)))
@@ -43,18 +44,3 @@
       (etypecase type
         (null)
         (string (write-char #\. s) (write-string type s))))))
-
-
-(defun simple-run-program (program &rest args)
-  "Return T if PROGRAM runs and exits with status 0."
-  (let* ((stringified-args
-          (mapcar #'(lambda (obj)
-                      (if (stringp obj)
-                          obj
-                          (format nil "~A" obj)))
-                  args))
-         (process (sb-ext:run-program program stringified-args :output t)))
-    (and process
-         (zerop (sb-ext:process-exit-code process)))))
-
-

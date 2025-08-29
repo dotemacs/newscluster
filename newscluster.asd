@@ -15,7 +15,7 @@
 
 
 (defsystem #:newscluster
-  :depends-on (:HTML-TEMPLATE :sparkline #:sb-posix)
+  :depends-on (:HTML-TEMPLATE :sparkline #:sb-posix #:newscluster-fetcher)
   :components ((:file "package")
                (:file "persistence" :depends-on ("package"))
                (:file "fetch" :depends-on ("package"))

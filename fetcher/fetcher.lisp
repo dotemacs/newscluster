@@ -119,14 +119,66 @@
             (t "")))
         "")))
 
+(defun fix-blogspot-timestamp (content)
+  "Fix malformed Blogspot Atom timestamps like '2024-10-25T01:40:28.276-07' (missing :00)"
+  ;; Fix timestamps that have -07 or -08 but are missing the :00
+  (cl-ppcre:regex-replace-all
+   "(T\\d{2}:\\d{2}:\\d{2}\\.\\d+)([+-]\\d{2})([^:]|$)"
+   content
+   "\\1\\2:00\\3"))
+
+(defun fix-malformed-xml (content)
+  "Apply various fixes to malformed XML/feeds"
+  (let ((fixed content))
+    ;; Fix Blogspot timestamps
+    (setf fixed (fix-blogspot-timestamp fixed))
+    ;; Remove XML stylesheet processing instructions that can cause issues
+    (setf fixed (cl-ppcre:regex-replace-all
+                 "<\\?xml-stylesheet[^>]*\\?>"
+                 fixed
+                 ""))
+    fixed))
+
+(defun html-content-p (content)
+  "Check if content is HTML instead of a feed"
+  (let ((first-500 (subseq content 0 (min 500 (length content)))))
+    (or (search "<!DOCTYPE html" first-500 :test #'char-equal)
+        (search "<!doctype html" first-500 :test #'char-equal)
+        ;; Check for <html> or <html ...> tag (with space or > after)
+        (cl-ppcre:scan "(?i)<html[\\s>]" first-500))))
+
 (defun fetch-feed-from-url (url)
   "Fetch and parse feed from URL"
   (handler-case
-      (let* ((content (drakma:http-request url
-                                           :user-agent *user-agent*
-                                           :force-binary t))
-             (text (flexi-streams:octets-to-string content :external-format :utf-8)))
-        (first (feeder:parse-feed text t)))
+      (multiple-value-bind (content status headers uri)
+          (drakma:http-request url
+                              :user-agent *user-agent*
+                              :force-binary t
+                              :connection-timeout 10
+                              :redirect t)  ; Follow all redirects
+        ;; Only process content if we got a successful response
+        (cond
+          ((= status 404)
+           (format *error-output* "~&Feed not found (404): ~A~%" url)
+           nil)
+          ((>= status 400)
+           (format *error-output* "~&HTTP error ~A for ~A~%" status url)
+           nil)
+          ((= status 200)
+           ;; Success - process the content
+           (let ((text (flexi-streams:octets-to-string content :external-format :utf-8)))
+             ;; Check if we got HTML instead of a feed
+             (when (html-content-p text)
+               (format *error-output* "~&URL ~A returned HTML instead of feed~%" url)
+               (return-from fetch-feed-from-url nil))
+             ;; Fix common XML issues
+             (setf text (fix-malformed-xml text))
+             ;; Try to parse
+             (first (feeder:parse-feed text t))))
+          (t
+           ;; Unexpected status code
+           (format *error-output* "~&Unexpected status ~A for ~A~%" status url)
+           nil)))
     (error (e)
       (format *error-output* "~&Error fetching ~A: ~A~%" url e)
       nil)))
@@ -140,7 +192,27 @@
       (format *error-output* "~&Error parsing ~A: ~A~%" file-path e)
       nil)))
 
+(defun fetch-channel-with-fallback (url directory name)
+  "Try feeder first, fall back to feedparser if it fails"
+  ;; First try with feeder (original method)
+  (handler-case
+      (when (fetch-channel-original url directory name)
+        (return-from fetch-channel-with-fallback t))
+    (error (e)
+      (format *error-output* "~&Feeder failed for ~A: ~A, trying feedparser...~%" url e)))
+
+  ;; If feeder fails, try feedparser
+  (handler-case
+      (fetch-channel-feedparser url directory name)
+    (error (e)
+      (format *error-output* "~&Feedparser also failed for ~A: ~A~%" url e)
+      nil)))
+
 (defun fetch-channel (url directory name)
+  "Main entry point - tries both parsers"
+  (fetch-channel-with-fallback url directory name))
+
+(defun fetch-channel-original (url directory name)
   "Fetch a feed and save it in newscluster format"
   (let* ((directory (pathname directory))
          (channel-file (merge-pathnames "channel-info.sexp" directory))
@@ -153,14 +225,18 @@
 
     ;; Parse the feed
     (let* ((url-string (if (pathnamep url) (namestring url) url))
-           (feed (if (or (probe-file url-string)
-                         (not (find #\: url-string :test #'char=)))
-                     (fetch-feed-from-file url-string)
-                     (fetch-feed-from-url url-string))))
+           ;; Check if it's a URL (has ://) or a local file
+           (url-p (search "://" url-string))
+           (feed (if url-p
+                     (fetch-feed-from-url url-string)
+                     ;; For local files, check if they exist
+                     (if (probe-file url-string)
+                         (fetch-feed-from-file url-string)
+                         (fetch-feed-from-url url-string)))))
 
       (unless feed
         (format *error-output* "~&Failed to parse feed from ~A~%" url)
-        (return-from fetch-channel nil))
+        (return-from fetch-channel-original nil))
 
       ;; Get feed metadata
       (let* ((feed-title (clean-string (or (feeder:title feed) "")))

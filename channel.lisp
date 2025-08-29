@@ -29,7 +29,6 @@
    (url :initarg :url :accessor url :type string)
    (path :initarg :path :accessor path)
    (feed-url :initarg :feed-url :accessor feed-url :type string)
-   (source :initarg :source :accessor source)
    (current-item-files :initarg :current-item-files
                        :initform nil
                        :accessor current-item-files)
@@ -41,7 +40,7 @@
 
 
 (defmethod object-storable-slots ((channel channel))
-  '(name title description url feed-url source check-frequency
+  '(name title description url feed-url check-frequency
     current-item-files))
 
 

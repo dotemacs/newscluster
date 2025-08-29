@@ -4,23 +4,27 @@ A Common Lisp library for fetching and parsing RSS/Atom feeds, integrated into t
 
 ## Features
 
-- Full RSS 2.0 and Atom 1.0 support
-- Conditional GET with If-Modified-Since headers
-- Tag-based filtering
+- RSS 2.0 and Atom 1.0 support via feeder library
+- Category/tag filtering support
+- HTTP fetching with Drakma
+- Local file parsing
 - Unicode character translation
 - MD5-based item identification
-- Failure tracking and retry logic
-- S-expression output format
+- S-expression output format compatible with newscluster
+- Robust handling of malformed feeds
 
 ## Dependencies
 
 The fetcher requires the following Common Lisp libraries:
 
+- `feeder` - RSS/Atom feed parsing with category support
+- `plump` - HTML/XML manipulation (used by feeder)
 - `drakma` - HTTP client
-- `cxml` - XML parsing
 - `cl-ppcre` - Regular expressions
 - `ironclad` - Cryptography (MD5 hashing)
 - `flexi-streams` - Character encoding
+- `local-time` - Time manipulation
+- `alexandria` - Utility functions
 - `sb-posix` - POSIX functions (SBCL-specific)
 
 These are automatically loaded when the newscluster system is loaded.
@@ -36,7 +40,7 @@ The fetcher is integrated into newscluster and is automatically used when fetchi
 (asdf:load-system :newscluster-fetcher)
 
 ;; Fetch a feed
-(newscluster-fetcher:fetch-channel 
+(newscluster-fetcher:fetch-channel
   "http://example.com/feed.xml"    ; Feed URL or local file path
   "/path/to/channel/directory/"    ; Output directory
   "channel-name")                   ; Channel name
@@ -44,7 +48,7 @@ The fetcher is integrated into newscluster and is automatically used when fetchi
 
 ### Integration with Newscluster
 
-The fetcher is automatically loaded as a dependency of the main newscluster system. When a channel with `source = "python"` is processed, it uses this fetcher.
+The fetcher is automatically loaded as a dependency of the main newscluster system and is used for all feed fetching operations.
 
 ## File Structure
 
@@ -57,8 +61,19 @@ directory/
 │   ├── [hash1].sexp
 │   ├── [hash2].sexp
 │   └── ...
-├── required-tags          # Optional: tag filter list
+├── required-tags          # Optional: tag filter list (one tag per line)
 └── failure-count          # Failure tracking
+```
+
+### Tag Filtering
+
+If a `required-tags` file exists in the channel directory, only feed items that have at least one matching category/tag will be saved. This allows filtering feeds to specific topics. For example, to only fetch Lisp-related posts, create a `required-tags` file with:
+
+```
+lisp
+common-lisp
+scheme
+clojure
 ```
 
 ## Output Format
@@ -70,7 +85,6 @@ directory/
          :description "Feed description"
          :url "http://example.com"
          :feed-url "http://example.com/feed.xml"
-         :source "python"
          :current-item-files (#p"hash1.sexp" #p"hash2.sexp")
          :last-fetch-time 3912192000)
 ```
@@ -87,26 +101,44 @@ directory/
 
 ## Testing
 
-Run the test suite to verify functionality:
+The fetcher is tested as part of the main newscluster test suite:
 
 ```bash
-./run-tests.lisp
+# Run all tests from command line
+./cli-tests.lisp
+
+# Or test in the REPL
+sbcl
+(load "repl-tests.lisp")
+(newscluster-tests:run-fetcher-tests)
+
+# Test a single feed type
+(newscluster-tests:run-single-fetcher-test "rss-basic")
 ```
 
 The test suite includes tests for:
 - RSS 2.0 feeds
-- Atom 1.0 feeds
+- Atom 1.0 feeds  
 - Empty feeds
 - CDATA handling
 - Malformed XML handling
+- Category/tag filtering
 
 ## Architecture
 
 The fetcher consists of three main components:
 
-1. **xml-parser.lisp** - XML parsing and feed format detection
-2. **fetcher.lisp** - Main fetching logic, HTTP handling, and file I/O
-3. **package.lisp** - Package definition and exports
+1. **fetcher.lisp** - Main fetching logic using feeder library, HTTP handling, and file I/O
+2. **package.lisp** - Package definition and exports  
+3. **newscluster-fetcher.asd** - ASDF system definition with dependencies
+
+### Key Implementation Details
+
+- Uses the `feeder` library for RSS/Atom parsing with built-in category support
+- Handles both string IDs and `feeder:link` objects for feed item identification
+- Automatically converts between Unix time and Universal time for compatibility
+- Supports both HTTP URLs and local file paths as input
+- Gracefully handles malformed feeds and missing data
 
 ## API
 

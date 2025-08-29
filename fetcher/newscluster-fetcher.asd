@@ -3,15 +3,16 @@
 ;;;
 
 (defsystem #:newscluster-fetcher
-  :description "Common Lisp replacement for Python feed fetcher"
+  :description "Common Lisp feed fetcher using feeder library"
   :author "newscluster"
-  :depends-on (#:drakma           ; HTTP client
-               #:cxml             ; XML parsing
-               #:cxml-dom         ; DOM interface
+  :depends-on (#:feeder           ; RSS/Atom parsing with category support
+               #:plump            ; HTML/XML manipulation (used by feeder)
+               #:drakma           ; HTTP client
                #:cl-ppcre         ; Regular expressions
                #:ironclad         ; Cryptography (MD5)
                #:flexi-streams    ; Character encoding
+               #:local-time       ; Time manipulation
+               #:alexandria       ; Utility functions
                #:sb-posix)        ; POSIX functions
   :components ((:file "package")
-               (:file "xml-parser" :depends-on ("package"))
-               (:file "fetcher" :depends-on ("package" "xml-parser"))))
+               (:file "fetcher" :depends-on ("package"))))

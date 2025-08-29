@@ -12,17 +12,16 @@
 
 (defun make-fetcher (channel)
   "Create a fetcher for the given channel"
-  (cond ((string= (source channel) "python")
-         (lambda ()
-           (handler-case
-               (newscluster-fetcher:fetch-channel
-                (feed-url channel)
-                (native-filename (path channel))
-                (name channel))
-             (error (e)
-               (format *debug-io* "; fetch of ~A failed: ~A~%"
-                       (feed-url channel) e)
-               nil))))))
+  (lambda ()
+    (handler-case
+        (newscluster-fetcher:fetch-channel
+         (feed-url channel)
+         (native-filename (path channel))
+         (name channel))
+      (error (e)
+        (format *debug-io* "; fetch of ~A failed: ~A~%"
+                (feed-url channel) e)
+        nil))))
 
 (defun native-filename (pathname)
   "Convert a pathname to a native filename string"

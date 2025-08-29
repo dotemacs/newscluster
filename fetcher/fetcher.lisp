@@ -1,11 +1,11 @@
 ;;;
-;;; fetcher.lisp - Main feed fetching logic
+;;; fetcher.lisp - Feed fetching
 ;;;
 
-(in-package :newscluster-fetcher)
+(in-package #:newscluster-fetcher)
 
-(defparameter *user-agent* 
-  "newscluster-fetcher/1.0 (Common Lisp implementation)")
+(defparameter *user-agent*
+  "newscluster-fetcher/1.0 (Common Lisp)")
 
 (defparameter *unicode-translations*
   '((#x2018 . "'")
@@ -19,262 +19,235 @@
     (#x2022 . "&middot;")
     (#x2026 . "...")))
 
-(defun file-exists-p (path)
-  "Check if file exists"
-  (probe-file path))
-
-(defun directory-empty-p (path)
-  "Check if directory is empty"
-  (null (directory (merge-pathnames "*.*" path))))
-
-(defun load-required-tags (filename)
-  "Load required tags from file"
-  (when (probe-file filename)
-    (with-open-file (stream filename)
-      (loop for line = (read-line stream nil)
-            while line
-            collect (string-trim '(#\Space #\Tab #\Newline #\Return) line)))))
-
-(defun load-failure-count (directory)
-  "Load failure count from file"
-  (let ((failure-file (merge-pathnames "failure-count" directory)))
-    (if (probe-file failure-file)
-        (with-open-file (stream failure-file)
-          (handler-case
-              (parse-integer (read-line stream))
-            (error () 0)))
-        0)))
-
-(defun increment-failure-count (directory)
-  "Increment and save failure count"
-  (let* ((failure-file (merge-pathnames "failure-count" directory))
-         (count (1+ (load-failure-count directory))))
-    (with-open-file (stream failure-file :direction :output 
-                           :if-exists :supersede)
-      (format stream "~D~%" count))
-    count))
-
-(defun clear-failure-count (directory)
-  "Clear failure count"
-  (let ((failure-file (merge-pathnames "failure-count" directory)))
-    (when (probe-file failure-file)
-      (delete-file failure-file))))
-
-(defun has-tag-p (required-tags item-tags)
-  "Check if item has any required tag"
-  (some (lambda (rtag)
-          (member rtag item-tags :test #'string=))
-        required-tags))
-
-(defun compute-item-hash (id)
-  "Compute MD5 hash of item ID"
-  (ironclad:byte-array-to-hex-string
-   (ironclad:digest-sequence :md5 
-                            (ironclad:ascii-string-to-byte-array id))))
-
 (defun unix-to-universal-time (unix-time)
-  "Convert Unix time to universal time"
+  "Convert Unix time to Universal time"
   (+ unix-time 2208988800))
 
 (defun universal-to-unix-time (universal-time)
-  "Convert universal time to Unix time"
-  (when universal-time
-    (- universal-time 2208988800)))
+  "Convert Universal time to Unix time"
+  (- universal-time 2208988800))
 
-(defun translate-unicode (string)
-  "Translate Unicode characters to HTML entities"
-  (with-output-to-string (out)
-    (loop for char across string
-          for code = (char-code char)
-          for translation = (cdr (assoc code *unicode-translations*))
-          do (cond
-               (translation
-                (write-string translation out))
-               ((or (> code 255)
-                    (= code #xA0)
-                    (and (< code 20) (not (member code '(9 10 13)))))
-                (format out "&#~D;" code))
-               ((member char '(#\\ #\"))
-                (write-char #\\ out)
-                (write-char char out))
-               (t
-                (write-char char out))))))
+(defun md5-hash (string)
+  "Generate MD5 hash of a string"
+  (ironclad:byte-array-to-hex-string
+   (ironclad:digest-sequence :md5
+                            (flexi-streams:string-to-octets string :external-format :utf-8))))
 
-(defun write-string-readably (stream string)
-  "Write string in Lisp-readable format"
-  (write-char #\" stream)
-  (write-string (translate-unicode string) stream)
-  (write-char #\" stream))
+(defun clean-string (string)
+  "Clean and translate Unicode characters in string"
+  (if (null string)
+      ""
+      (with-output-to-string (out)
+        (loop for char across string
+              for code = (char-code char)
+              for translation = (assoc code *unicode-translations*)
+              do (if translation
+                     (write-string (cdr translation) out)
+                     (write-char char out))))))
 
-(defun write-sexp (stream operator &rest args)
-  "Write S-expression to stream"
+(defun timestamp-to-unix (timestamp)
+  "Convert a local-time timestamp to Unix time, or return 0 if nil"
+  (if timestamp
+      (universal-to-unix-time
+       (local-time:timestamp-to-universal timestamp))
+      0))
+
+(defun write-sexp (stream label &rest args)
+  "Write an S-expression to stream"
   (write-char #\( stream)
-  (write-string (string-downcase (string operator)) stream)
+  (princ label stream)
   (loop for (key value) on args by #'cddr
         do (format stream " :~A " (string-downcase (string key)))
-           (typecase value
-             (string (write-string-readably stream value))
-             (number (format stream "~D" value))
-             (list 
-              (write-char #\( stream)
-              (loop for (item . rest) on value
-                    do (format stream "#p\"~A\"" item)
-                       (when rest (write-char #\Space stream)))
-              (write-char #\) stream))
-             (t (princ value stream))))
+           (if (stringp value)
+               (prin1 (clean-string value) stream)
+               (prin1 value stream)))
   (write-char #\) stream)
   (terpri stream))
 
-(defun fetch-url (url &key modified-since user-agent)
-  "Fetch URL content with conditional GET support"
+(defun ensure-directories (directory)
+  "Ensure directory and items subdirectory exist"
+  (ensure-directories-exist directory)
+  (ensure-directories-exist (merge-pathnames "items/" directory)))
+
+(defun load-required-tags (directory)
+  "Load required tags from file"
+  (let ((tags-file (merge-pathnames "required-tags" directory)))
+    (when (probe-file tags-file)
+      (with-open-file (stream tags-file)
+        (loop for line = (read-line stream nil)
+              while line
+              for tag = (string-trim '(#\Space #\Tab #\Newline #\Return) line)
+              when (> (length tag) 0)
+              collect (string-downcase tag))))))
+
+(defun item-has-required-tag-p (item required-tags)
+  "Check if item has at least one required tag"
+  (if (null required-tags)
+      t  ; No filter, accept all
+      (let ((item-categories (mapcar #'string-downcase
+                                     (feeder:categories item))))
+        ;; Check if any required tag matches any item category
+        (some (lambda (required-tag)
+                (member required-tag item-categories :test #'string=))
+              required-tags))))
+
+(defun get-item-id (entry)
+  "Get a unique ID for an entry"
+  (let ((id (feeder:id entry)))
+    (cond
+      ;; If we have an ID and it's a string, use it
+      ((and id (stringp id)) id)
+      ;; If we have an ID that's a link object, get its URL
+      ((and id (typep id 'feeder:link)) (feeder:url id))
+      ;; Otherwise try the link
+      (t (let ((link-obj (feeder:link entry)))
+           (if link-obj
+               (feeder:url link-obj)
+               ;; Generate a unique ID if neither exists
+               (format nil "~A-~A"
+                       (feeder:title entry)
+                       (get-universal-time))))))))
+
+(defun get-item-author (entry)
+  "Get the author name from an entry"
+  (let ((authors (feeder:authors entry)))
+    (if (and authors (> (length authors) 0))
+        (let ((first-author (first authors)))
+          (typecase first-author
+            (feeder:person (feeder:name first-author))
+            (string first-author)
+            (t "")))
+        "")))
+
+(defun fetch-feed-from-url (url)
+  "Fetch and parse feed from URL"
   (handler-case
-      (multiple-value-bind (body status-code headers)
-          (drakma:http-request url
-                              :user-agent (or user-agent *user-agent*)
-                              :if-modified-since modified-since
-                              :want-stream nil)
-        (values (when body
-                  (if (stringp body)
-                      body
-                      (flexi-streams:octets-to-string body :external-format :utf-8)))
-                status-code
-                headers))
+      (let* ((content (drakma:http-request url
+                                           :user-agent *user-agent*
+                                           :force-binary t))
+             (text (flexi-streams:octets-to-string content :external-format :utf-8)))
+        (first (feeder:parse-feed text t)))
     (error (e)
-      (format *error-output* "~&; Error fetching ~A: ~A~%" url e)
-      (values nil 999 nil))))
+      (format *error-output* "~&Error fetching ~A: ~A~%" url e)
+      nil)))
 
-(defun fetch-local-file (path)
-  "Fetch content from local file (for testing)"
+(defun fetch-feed-from-file (file-path)
+  "Parse feed from local file"
   (handler-case
-      (with-open-file (stream path :external-format :utf-8)
-        (let ((content (make-string (file-length stream))))
-          (read-sequence content stream)
-          (values content 200 nil)))
+      (let ((content (alexandria:read-file-into-string file-path)))
+        (first (feeder:parse-feed content t)))
     (error (e)
-      (format *error-output* "~&; Error reading ~A: ~A~%" path e)
-      (values nil 404 nil))))
-
-(defun fetch-content (url &key modified-since)
-  "Fetch content from URL or local file"
-  (if (or (cl-ppcre:scan "^https?://" url)
-          (cl-ppcre:scan "^ftp://" url))
-      (fetch-url url :modified-since modified-since :user-agent *user-agent*)
-      (fetch-local-file url)))
-
-(defun write-item-file (directory item feed-url new-channel-p)
-  "Write item to file"
-  (let* ((item-id (feed-item-id item))
-         (hash (compute-item-hash item-id))
-         (filename (format nil "~A.sexp" hash))
-         (filepath (merge-pathnames (format nil "items/~A" filename) directory))
-         (tmppath (merge-pathnames (format nil "items/~A.tmp" filename) directory))
-         (unix-time (or (universal-to-unix-time (feed-item-date item))
-                       (if new-channel-p
-                           0
-                           (if (probe-file filepath)
-                               (universal-to-unix-time 
-                                (file-write-date filepath))
-                               (universal-to-unix-time 
-                                (get-universal-time)))))))
-    
-    (with-open-file (stream tmppath :direction :output 
-                           :if-exists :supersede
-                           :external-format :utf-8)
-      (write-sexp stream 'item
-                  'id item-id
-                  'title (feed-item-title item)
-                  'author-name (or (feed-item-author-name item) "")
-                  'description (feed-item-description item)
-                  'date (unix-to-universal-time unix-time)
-                  'link (feed-item-link item)))
-    
-    (rename-file tmppath filepath)
-    
-    ;; Set file modification time
-    (when unix-time
-      (sb-posix:utime (namestring filepath) unix-time unix-time))
-    
-    filename))
-
-(defun get-existing-files (directory)
-  "Get hash table of existing item files"
-  (let ((table (make-hash-table :test 'equal)))
-    (dolist (file (directory (merge-pathnames "items/*.sexp" directory)))
-      (setf (gethash (namestring file) table) t))
-    table))
+      (format *error-output* "~&Error parsing ~A: ~A~%" file-path e)
+      nil)))
 
 (defun fetch-channel (url directory name)
-  "Main entry point - fetch channel and write files"
+  "Fetch a feed and save it in newscluster format"
   (let* ((directory (pathname directory))
          (channel-file (merge-pathnames "channel-info.sexp" directory))
          (channel-tmp (merge-pathnames "channel-info.sexp.tmp" directory))
-         (items-dir (merge-pathnames "items/" directory))
-         (required-tags-file (merge-pathnames "required-tags" directory))
-         (modified-since nil))
-    
+         (required-tags (load-required-tags directory))
+         (feed-files '()))
+
     ;; Ensure directories exist
-    (ensure-directories-exist items-dir)
-    
-    ;; Get modification time for conditional GET
-    (when (and (probe-file channel-file)
-               (not (directory-empty-p items-dir)))
-      (setf modified-since (file-write-date channel-file)))
-    
-    ;; Fetch feed
-    (multiple-value-bind (content status-code headers)
-        (fetch-content url :modified-since modified-since)
-      
-      (declare (ignore headers))
-      
-      ;; Handle non-200 responses
-      (when (and modified-since (not (member status-code '(200 304))))
-        (let ((failures (increment-failure-count directory)))
-          (format t "~&>> ~A status ~D (failure #~D)~%" url status-code failures)))
-      
-      (unless (= status-code 200)
-        (return-from fetch-channel t))
-      
-      (clear-failure-count directory)
-      
-      ;; Parse feed
-      (let ((feed (parse-feed content)))
-        (unless feed
-          (format *error-output* "~&; Failed to parse feed from ~A~%" url)
-          (return-from fetch-channel nil))
-        
-        ;; Load required tags if any
-        (let ((required-tags (load-required-tags required-tags-file))
-              (new-channel-p (directory-empty-p items-dir))
-              (old-files (get-existing-files directory))
-              (feed-files '()))
-          
-          ;; Process items
-          (dolist (item (feed-info-items feed))
-            ;; Check tag filter
-            (when (or (null required-tags)
-                     (has-tag-p required-tags (feed-item-categories item)))
-              (let ((filename (write-item-file directory item url new-channel-p)))
-                (push filename feed-files)
-                (remhash (namestring (merge-pathnames 
-                                     (format nil "items/~A" filename) 
-                                     directory))
-                        old-files))))
-          
-          ;; Write channel info
-          (with-open-file (stream channel-tmp :direction :output
-                                 :if-exists :supersede
-                                 :external-format :utf-8)
-            (write-sexp stream 'channel
-                        'name name
-                        'title (feed-info-title feed)
-                        'description (feed-info-description feed)
-                        'url (feed-info-link feed)
-                        'feed-url url
-                        'source "python"  
-                        'current-item-files (nreverse feed-files)
-                        'last-fetch-time (unix-to-universal-time 
-                                        (universal-to-unix-time 
+    (ensure-directories directory)
+
+    ;; Parse the feed
+    (let* ((url-string (if (pathnamep url) (namestring url) url))
+           (feed (if (or (probe-file url-string)
+                         (not (find #\: url-string :test #'char=)))
+                     (fetch-feed-from-file url-string)
+                     (fetch-feed-from-url url-string))))
+
+      (unless feed
+        (format *error-output* "~&Failed to parse feed from ~A~%" url)
+        (return-from fetch-channel nil))
+
+      ;; Get feed metadata
+      (let* ((feed-title (clean-string (or (feeder:title feed) "")))
+             (feed-summary (feeder:summary feed))
+             (feed-description (clean-string
+                                (if (stringp feed-summary)
+                                    feed-summary
+                                    (or (and feed-summary
+                                             (plump:text feed-summary))
+                                        ""))))
+             (feed-link-obj (feeder:link feed))
+             (feed-link (if feed-link-obj
+                            (feeder:url feed-link-obj)
+                            "")))
+
+        ;; Process entries
+        (dolist (entry (feeder:content feed))
+          ;; Check if entry passes tag filter
+          (when (item-has-required-tag-p entry required-tags)
+            (let* ((item-id (get-item-id entry))
+                   (item-title (clean-string (or (feeder:title entry) "")))
+                   (item-content (feeder:content entry))
+                   (item-summary (feeder:summary entry))
+                   (item-description (clean-string
+                                      (cond
+                                        ((and item-content (stringp item-content)) item-content)
+                                        ((and item-summary (stringp item-summary)) item-summary)
+                                        (item-content (plump:text item-content))
+                                        (item-summary (plump:text item-summary))
+                                        (t ""))))
+                   (item-link-obj (feeder:link entry))
+                   (item-link (if item-link-obj
+                                  (feeder:url item-link-obj)
+                                  ""))
+                   (item-author (clean-string (get-item-author entry)))
+                   (item-published (feeder:published-on entry))
+                   (item-updated (feeder:updated-on entry))
+                   (item-date (timestamp-to-unix (or item-published item-updated)))
+                   (hash (md5-hash item-id))
+                   (item-file (format nil "~A.sexp" hash))
+                   (item-path (merge-pathnames (format nil "items/~A" item-file) directory))
+                   (item-tmp (merge-pathnames (format nil "items/~A.tmp" item-file) directory)))
+
+              ;; Debug: show categories for items
+              (when (and required-tags (feeder:categories entry))
+                (format *error-output* "~&Item '~A' has categories: ~S~%"
+                        item-title (feeder:categories entry)))
+
+              ;; Write item file
+              (with-open-file (stream item-tmp :direction :output
+                                               :if-exists :supersede
+                                               :external-format :utf-8)
+                (write-sexp stream 'item
+                            'id item-id
+                            'title item-title
+                            'author-name item-author
+                            'description item-description
+                            'date (unix-to-universal-time item-date)
+                            'link item-link))
+
+              ;; Rename temp file to final
+              (rename-file item-tmp item-path)
+
+              ;; Set file modification time if we have a date
+              (when (> item-date 0)
+                (handler-case
+                    (sb-posix:utime (namestring item-path) item-date item-date)
+                  (error () nil)))
+
+              ;; Add to file list
+              (push (pathname item-file) feed-files))))
+
+        ;; Write channel info
+        (with-open-file (stream channel-tmp :direction :output
+                                            :if-exists :supersede
+                                            :external-format :utf-8)
+          (write-sexp stream 'channel
+                      'name name
+                      'title feed-title
+                      'description feed-description
+                      'url feed-link
+                      'feed-url url
+                      'current-item-files (nreverse feed-files)
+                      'last-fetch-time (unix-to-universal-time
+                                        (universal-to-unix-time
                                          (get-universal-time)))))
-          
-          (rename-file channel-tmp channel-file)
-          t)))))
+
+        ;; Rename temp file to final
+        (rename-file channel-tmp channel-file)
+        t))))

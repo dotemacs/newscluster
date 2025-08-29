@@ -120,7 +120,6 @@
                                  :description ""
                                  :url ""
                                  :feed-url feed-url
-                                 :source "python"
                                  :current-item-files nil
                                  :path path)))
     (unless (find-channel planet path)
